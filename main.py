@@ -1,3 +1,4 @@
+import copy
 import random
 import curses
 
@@ -92,29 +93,14 @@ class Player:
         self.move = ''.join(move)
         self.history.append(self.move)
         if len(self.history) > 10:
-            self.history = self.history[len(self.history) - 10:]
-
-    def check_effects(self):
-        if self.move == 'cleanse':
-            self.effects.clear()
-        else:
-            if 'fire' in self.effects.keys():
-                self.effects['fire'] -= 1
-                self.health -= self.enemy.fire_dmg
-                if self.effects['fire'] == 0:
-                    self.effects.pop('fire')
-            if 'poison' in self.effects.keys():
-                self.effects['poison'] -= 1
-                self.health -= self.enemy.poison_dmg
-                if self.effects['poison'] == 0:
-                    self.effects.pop('poison')
+            self.history = self.history[-10:]
 
     def play(self):
         self.until_shield = max(0, self.until_shield - 1)
         if self.move == 'shield':
             self.until_shield = 2
         if self.enemy.move == 'sword':
-            if self.move != 'shield':
+            if self.move != 'shield' and self.until_shield == 0:
                 if self.move == 'dodge':
                     self.health -= self.enemy.sword_dmg // 2
                 else:
@@ -211,6 +197,69 @@ class Enemy(Player):
         self.energy = 10000
 
 
+def combatant_state(combatant):
+    return {
+        key: value for key, value in combatant.__dict__.items()
+        if key != 'enemy'
+    }
+
+
+def snapshot_combatants(combatants):
+    return [copy.deepcopy(combatant_state(combatant)) for combatant in combatants]
+
+
+def restore_combatants(combatants, snapshots):
+    for combatant, snap in zip(combatants, snapshots):
+        combatant.__dict__.update(copy.deepcopy(snap))
+
+
+def resolve_status(actor, turn_snapshot):
+    effects = actor.effects
+    effects_before = turn_snapshot[actor]['effects']
+
+    if actor.move == 'cleanse':
+        for name in list(effects_before.keys()):
+            effects.pop(name, None)
+        return
+
+    for name in sorted(effects_before):
+        if name not in effects:
+            continue
+        effects[name] -= 1
+        if name == 'fire':
+            actor.health -= actor.enemy.fire_dmg
+        elif name == 'poison':
+            actor.health -= actor.enemy.poison_dmg
+        if effects[name] <= 0:
+            effects.pop(name, None)
+
+
+def resolve_turn(player, enemy, player_move=None, enemy_move=None,
+                 play_order=('enemy', 'player')):
+    combatants = (player, enemy)
+    turn_snapshot = {
+        combatant: copy.deepcopy(combatant_state(combatant))
+        for combatant in combatants
+    }
+    snaps = snapshot_combatants(combatants)
+
+    if player_move is not None:
+        player.move = player_move
+    if enemy_move is not None:
+        enemy.move = enemy_move
+
+    try:
+        players_by_role = {'player': player, 'enemy': enemy}
+        for role in play_order:
+            players_by_role[role].play()
+
+        for combatant in combatants:
+            resolve_status(combatant, turn_snapshot)
+    except BaseException:
+        restore_combatants(combatants, snaps)
+        raise
+
+
 def main(stdscr):
     curses.start_color()
 
@@ -257,11 +306,7 @@ def main(stdscr):
             player.take_turn(stdscr)
             enemy.take_turn()
 
-            enemy.play()
-            player.play()
-
-            player.check_effects()
-            enemy.check_effects()
+            resolve_turn(player, enemy)
 
             player_msg = f'You played {player.move.swapcase()}!'
             enemy_msg = f'Enemy played {enemy.move.swapcase()}!'
